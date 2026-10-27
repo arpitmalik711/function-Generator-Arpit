@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Off-road bump profile editor</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#140808;--panel:#1f0e0e;--ink:#ffffff;--muted:#f0d4d4;--grid:#3d1b1b;--grid2:#7a2c2c;--line:#ff3b30;--fill:rgba(255,59,48,.22);--warn:#ffb3ad;color-scheme:dark;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#140808;--panel:#1f0e0e;--ink:#ffffff;--muted:#f0d4d4;--grid:#3d1b1b;--grid2:#7a2c2c;--line:#ff3b30;--fill:rgba(255,59,48,.22);--warn:#ffb3ad;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#140808;--panel:#1f0e0e;--ink:#ffffff;--muted:#f0d4d4;--grid:#3d1b1b;--grid2:#7a2c2c;--line:#ff3b30;--fill:rgba(255,59,48,.22);--warn:#ffb3ad;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+main{max-width:940px;margin:0 auto;padding:20px 16px 32px;position:relative}
+.logo{position:absolute;top:16px;left:16px;width:67px;height:67px}
+.logo img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+h1{padding-left:83px;min-height:67px}
+h1{font-size:20px;margin:0 0 4px;font-weight:600}
+h2{font-size:15px;margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;color:var(--muted)}
+.box{background:var(--panel);border:1px solid var(--grid2);border-radius:6px;padding:8px}
+canvas{display:block;width:100%;height:auto;aspect-ratio:16/6;touch-action:none}section{margin-top:26px}.lbl{margin:10px 0 4px}input:disabled{opacity:.4}select{max-width:100%}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
+button,select,input{font:inherit;background:var(--panel);color:var(--ink);border:1px solid var(--grid2);border-radius:4px;padding:5px 9px}
+button{cursor:pointer}button:hover{border-color:var(--line)}
+:focus-visible{outline:2px solid var(--line);outline-offset:2px}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:820px}
+th{font-weight:600;text-align:left;color:var(--muted);padding:4px 6px;font-size:13px}
+td{padding:3px 4px}
+td input{width:100%;box-sizing:border-box;min-width:64px}
+.warn{color:var(--warn);margin:6px 0 0;min-height:1.4em}
+textarea{width:100%;box-sizing:border-box;background:var(--panel);color:var(--ink);border:1px solid var(--grid2);border-radius:4px;padding:8px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<main>
+<div class="logo" aria-label="Logo"><img src="https://res.cloudinary.com/fvtkc10l/image/upload/v1792699524/logo-base_iakrjv.webp" alt=""><img src="https://res.cloudinary.com/fvtkc10l/image/upload/v1792699530/logo-wave_idngt5.webp" alt="Logo"></div>
+<h1>Off-road bump profile, left and right tyre, 0 to 5 s</h1>
+<p>You can also paste a MotionSolve function into a tyre's function box and the graph follows it. Each tyre has its own table. An obstacle is either a smooth ramp (rise, top, fall) or a standard sine bump, which is a half sine wave. Both tyres use the one vehicle speed set below, and the time on an obstacle is its length divided by that speed. Use a negative height for a pothole. Drag the dots on a graph to edit an obstacle: left and right changes its timing or length, up and down changes its height.</p>
+<div class="bar"><label for="unit">MotionView model length unit</label><select id="unit"><option value="1">mm</option><option value="0.001">m</option><option value="0.0393700787">inch</option></select></div>
+<div class="bar"><label for="spd">Vehicle speed (km/h), both tyres</label><input id="spd" type="number" min="1" step="1" value="20" style="width:90px"></div>
+<div id="sides"></div>
+<h2>Sampled data (time, left, right) every 0.01 s, in the unit chosen above</h2>
+<textarea id="csv" rows="8" readonly></textarea>
+</main>
+<script>
+(function(){
+var T=5;
+var presets={
+ single:{n:'Single 6 in bump (smooth ramp)',r:[[0.5,20,0.6,0.4,0.6,152.4,'S']]},
+ sine:{n:'Sine bump',r:[[0.5,20,1.5,0,0,100,'N']]},
+ wash:{n:'Washboard, 5 ridges',r:[0.5,0.9,1.3,1.7,2.1].map(function(s){return [s,15,0.25,0.1,0.25,50,'S']})},
+ pot:{n:'Pothole',r:[[1.5,20,0.3,0.5,0.3,-120,'S']]},
+ rock:{n:'Rock garden',r:[[0.3,12,0.4,0.2,0.5,90,'S'],[1.1,10,0.3,0.1,0.3,140,'S'],[1.9,12,1.2,0,0,70,'N'],[2.8,8,0.25,0.2,0.4,180,'S'],[3.7,12,0.5,0.2,0.5,110,'S']]}
+};
+var sides=[{k:'L',name:'Left tyre',rows:[]},{k:'R',name:'Right tyre',rows:[]}];
+function st(x,x0,h0,x1,h1){if(x<=x0)return h0;if(x>=x1)return h1;var d=(x-x0)/(x1-x0);return h0+(h1-h0)*d*d*(3-2*d)}
+function tm(r){var v=r[1]/3.6,a=r[0];
+ if(r[6]==='N')return {a:a,d:r[2]/v,b:a+r[2]/v,h:r[5],end:a+r[2]/v,dur:r[2]/v};
+ var b=a+r[2]/v,c=b+r[3]/v,d=c+r[4]/v;return {a:a,b:b,c:c,d:d,h:r[5],end:d,dur:d-a}}
+function samp(sd,t){if(!sd.custom)return val(sd.rows,t);var y=sd.custom(t)/U;return isFinite(y)?y:0}
+function val(rows,t){var s=0;rows.forEach(function(r){var q=tm(r);
+ if(r[6]==='N'){if(t>q.a&&t<q.b)s+=q.h*Math.sin(Math.PI*(t-q.a)/q.dur)}
+ else s+=st(t,q.a,0,q.b,q.h)-st(t,q.c,0,q.d,q.h)});return s}
+var U=1,frz=null,LR=null,SP=20,LU=1,UN='mm',LN='m';
+/*C*/
+function compile(src){
+ var s=src.replace(/`/g,'').replace(/\s+/g,'');
+ if(!s)throw new Error('the box is empty');
+ var tok=[],re=/(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_][A-Za-z_0-9]*)|(\*\*|[-+*\/(),:])/y,m,pos=0;
+ while(pos<s.length){re.lastIndex=pos;m=re.exec(s);if(!m)throw new Error('unexpected "'+s[pos]+'"');
+  tok.push(m[1]!==undefined?{n:parseFloat(m[1])}:m[2]!==undefined?{id:m[2].toUpperCase()}:{op:m[3]});pos=re.lastIndex}
+ var i=0;
+ function isop(o){var t=tok[i];return !!t&&t.op===o}
+ function eat(o){if(!isop(o))throw new Error('expected "'+o+'"');i++}
+ function bin(o,a,b){return o==='+'?function(t){return a(t)+b(t)}:o==='-'?function(t){return a(t)-b(t)}:o==='*'?function(t){return a(t)*b(t)}:function(t){return a(t)/b(t)}}
+ function expr(){var a=term();while(isop('+')||isop('-')){var o=tok[i++].op,b=term();a=bin(o,a,b)}return a}
+ function term(){var a=unary();while(isop('*')||isop('/')){var o=tok[i++].op,b=unary();a=bin(o,a,b)}return a}
+ function unary(){if(isop('-')){i++;var a=unary();return function(t){return -a(t)}}if(isop('+')){i++;return unary()}return pow()}
+ function pow(){var a=prim();if(isop('**')){i++;var b=unary();return function(t){return Math.pow(a(t),b(t))}}return a}
+ var impl={SIN:Math.sin,COS:Math.cos,TAN:Math.tan,ABS:Math.abs,SQRT:Math.sqrt,EXP:Math.exp,LOG:Math.log,ATAN:Math.atan,MIN:Math.min,MAX:Math.max};
+ function fn(id,a){
+  if(id==='STEP'){if(a.length!==5)throw new Error('STEP needs 5 arguments');return function(t){return st(a[0](t),a[1](t),a[2](t),a[3](t),a[4](t))}}
+  if(impl[id]){var f=impl[id];return function(t){return f.apply(null,a.map(function(g){return g(t)}))}}
+  throw new Error('unsupported function '+id)}
+ function prim(){var k=tok[i++];if(!k)throw new Error('the function ends too early');
+  if(k.n!==undefined)return function(){return k.n};
+  if(k.op==='('){var e=expr();eat(')');return e}
+  if(k.id){
+   if(k.id==='TIME')return function(t){return t};
+   if(k.id==='PI')return function(){return Math.PI};
+   if(!isop('('))throw new Error('unknown name '+k.id);
+   i++;
+   if(k.id==='IF'){var c=expr();eat(':');var a1=expr();eat(',');var a2=expr();eat(',');var a3=expr();eat(')');
+    return function(t){var v=c(t);return v<0?a1(t):v===0?a2(t):a3(t)}}
+   var args=[];if(!isop(')')){args.push(expr());while(isop(',')){i++;args.push(expr())}}eat(')');
+   return fn(k.id,args)}
+  throw new Error('unexpected "'+k.op+'"')}
+ var r=expr();
+ if(i<tok.length){var u=tok[i];throw new Error('unexpected "'+(u.op||u.id||u.n)+'"')}
+ if(!isFinite(r(0.5)))throw new Error('the function gives an invalid number')
+ return r}
+/*E*/
+/*R*/
+function toRows(src,V){
+ var s=src.replace(/`/g,'').replace(/\s+/g,'');
+ var NU='(\\d+\\.?\\d*(?:[eE][-+]?\\d+)?|\\.\\d+(?:[eE][-+]?\\d+)?)',NS='([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?)';
+ var reN=new RegExp('IF\\(TIME-'+NU+':0,0,IF\\(TIME-'+NU+':'+NS+'\\*SIN\\(PI\\*\\(TIME-'+NU+'\\)/'+NU+'\\),0,0\\)\\)','iy');
+ var reS=new RegExp('STEP\\(TIME,'+NU+',0,'+NU+','+NS+'\\)-STEP\\(TIME,'+NU+',0,'+NU+','+NS+'\\)','iy');
+ var v=V/3.6,rows=[],pos=0,m,g;
+ while(pos<s.length){
+  if(s[pos]==='+'){pos++;continue}
+  reN.lastIndex=pos;reS.lastIndex=pos;
+  if((m=reN.exec(s))){g=m.slice(1).map(parseFloat);
+   if(Math.abs(g[0]-g[3])>1e-3||Math.abs(g[1]-g[0]-g[4])>1e-3||g[4]<=0)return null;
+   rows.push([n(g[0]),V,n(g[4]*v),0,0,n(g[2]/U),'N']);pos=reN.lastIndex}
+  else if((m=reS.exec(s))){g=m.slice(1).map(parseFloat);
+   if(Math.abs(g[2]-g[5])>1e-6*Math.max(1,Math.abs(g[2]))||g[1]<=g[0]||g[3]<g[1]||g[4]<=g[3])return null;
+   rows.push([n(g[0]),V,n((g[1]-g[0])*v),n((g[3]-g[1])*v),n((g[4]-g[3])*v),n(g[2]/U),'S']);pos=reS.lastIndex}
+  else return null}
+ return rows.length?rows:null}
+/*T*/
+function n(v){return +(+v).toFixed(5)}
+function expr(rows){var ex=rows.map(function(r){var q=tm(r),h=n(q.h*U);
+ if(r[6]==='N')return 'IF(TIME-'+n(q.a)+':0,0,IF(TIME-'+n(q.b)+':'+h+'*SIN(PI*(TIME-'+n(q.a)+')/'+n(q.dur)+'),0,0))';
+ return 'STEP(TIME,'+n(q.a)+',0,'+n(q.b)+','+h+')-STEP(TIME,'+n(q.c)+',0,'+n(q.d)+','+h+')'});
+ return '`'+(ex.length?ex.join('+'):'0')+'`'}
+var LAB=['Start','Speed','Length','Top length','Fall length','Height'],STEPS=[0.05,1,0.05,0.05,0.05,5],MINS=[0,1,0,0,0,null];
+function hs(sd){var o=[];sd.rows.forEach(function(r,i){var q=tm(r);o.push({i:i,k:'start',x:q.a,y:0});
+ if(r[6]==='N'){o.push({i:i,k:'peak',x:q.a+q.dur/2,y:q.h});o.push({i:i,k:'end',x:q.b,y:0})}
+ else{o.push({i:i,k:'p1',x:q.b,y:q.h});o.push({i:i,k:'p2',x:q.c,y:q.h});o.push({i:i,k:'end',x:q.d,y:0})}});return o}
+function pt(sd,e){var r=sd.cv.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}}
+function tOf(sd,px){return (px-M.l)/(sd.W-M.l-M.r)*T}
+function yOf(sd,py){return sd.lo+(sd.H-M.b-py)/(sd.H-M.t-M.b)*(sd.hi-sd.lo)}
+function pick(sd,c){var best=null,bd=20*20;if(!sd.X||sd.custom)return null;hs(sd).forEach(function(h){if(h.x>T)return;var dx=sd.X(h.x)-c.x,dy=sd.Y(h.y*U)-c.y,d=dx*dx+dy*dy;if(d<=bd){bd=d;best=h}});return best}
+function mv(sd,c){var d=sd.drag,r=sd.rows[d.i],q=tm(r),v=r[1]/3.6,t=tOf(sd,c.x)+d.off,y=Math.max(sd.lo,Math.min(sd.hi,yOf(sd,c.y))),k=d.k;
+ function L(x){return +Math.max(0,x).toFixed(3)}
+ if(k==='start')r[0]=+Math.max(0,Math.min(T,t)).toFixed(3);
+ else if(k==='peak'){r[0]=+Math.max(0,Math.min(T,t-q.dur/2)).toFixed(3);r[5]=+(y/U).toFixed(3)}
+ else if(k==='p1'){r[2]=L((t-q.a)*v);r[5]=+(y/U).toFixed(3)}
+ else if(k==='p2'){r[3]=L((t-q.b)*v);r[5]=+(y/U).toFixed(3)}
+ else if(k==='end'){if(r[6]==='N')r[2]=Math.max(0.01,L((t-q.a)*v));else r[4]=L((t-q.c)*v)}
+ var inp=sd.tb.rows[d.i]&&sd.tb.rows[d.i].querySelectorAll('input');if(inp)inp.forEach(function(x){var j=+x.dataset.j;x.value=disp(j,r[j])});
+ update()}
+var host=document.getElementById('sides');
+sides.forEach(function(sd){
+ var sec=document.createElement('section');
+ var opts=Object.keys(presets).map(function(k){return '<option value="'+k+'">'+presets[k].n+'</option>'}).join('');
+ sec.innerHTML='<h2>'+sd.name+'</h2><div class="bar"><select class="pre" aria-label="'+sd.name+' preset">'+opts+'</select><button class="ld">Load preset</button><button class="add">Add obstacle</button><button class="rs">Use table values</button>'+(sd.k==='R'?'<button class="cp">Copy left table</button>':'')+'</div><div class="box"><canvas aria-label="'+sd.name+' road profile"></canvas></div><p class="warn"></p><div class="tbl"><table><thead><tr><th></th><th>Type</th><th>Start (s)</th><th data-h="2"></th><th data-h="3"></th><th data-h="4"></th><th data-h="5"></th><th>Time on obstacle (s)</th></tr></thead><tbody></tbody></table></div><p class="lbl">MotionView solver function, '+sd.name.toLowerCase()+' (edit or paste here and the graph follows)</p><textarea rows="5" spellcheck="false" aria-label="'+sd.name+' solver function"></textarea>';
+ host.appendChild(sec);
+ sd.sec=sec;sd.cv=sec.querySelector('canvas');sd.ctx=sd.cv.getContext('2d');sd.tb=sec.querySelector('tbody');sd.ta=sec.querySelector('textarea');sd.warn=sec.querySelector('.warn');
+ sd.ta.oninput=function(){
+  var fn;try{fn=compile(sd.ta.value);sd.err=''}catch(e){sd.err='Cannot read this function: '+e.message+'. The graph keeps the last valid version.';update();return}
+  var V=SP,rows=toRows(sd.ta.value,V);
+  if(rows){sd.rows=rows;sd.custom=null;sd.key=JSON.stringify(rows);sd.note='The table was built from the pasted function. Its lengths were worked out from the times at the vehicle speed of '+V+' km/h. Change the speed at the top or the lengths to match your vehicle.';build(sd)}
+  else{sd.custom=fn;sd.note=''}
+  update()};
+ sd.cv.onpointerdown=function(e){var c=pt(sd,e),h=pick(sd,c);if(!h)return;
+  var q=tm(sd.rows[h.i]);sd.drag={i:h.i,k:h.k,off:h.x-tOf(sd,c.x)};
+  frz={lo:LR.lo-LR.step,hi:LR.hi+LR.step};sd.cv.setPointerCapture(e.pointerId);sd.cv.style.cursor='grabbing';e.preventDefault();draw()};
+ sd.cv.onpointermove=function(e){var c=pt(sd,e);if(sd.drag){mv(sd,c);return}sd.cv.style.cursor=pick(sd,c)?'grab':'default'};
+ var endDrag=function(){if(!sd.drag)return;sd.drag=null;frz=null;sd.cv.style.cursor='default';build(sd);update()};
+ sd.cv.onpointerup=endDrag;sd.cv.onpointercancel=endDrag;
+ sec.querySelector('.rs').onclick=function(){sd.key=null;update()};
+ sec.querySelector('.ld').onclick=function(){sd.rows=presets[sec.querySelector('.pre').value].r.map(function(r){var c=r.slice();c[1]=SP;return c});build(sd);update()};
+ sec.querySelector('.add').onclick=function(){var last=sd.rows.length?tm(sd.rows[sd.rows.length-1]).end:0.3;sd.rows.push([+Math.min(last+0.2,4).toFixed(2),SP,0.5,0.3,0.5,100,'S']);build(sd);update()};
+ var cp=sec.querySelector('.cp');if(cp)cp.onclick=function(){sd.rows=sides[0].rows.map(function(r){return r.slice()});build(sd);update()};
+});
+function disp(j,v){return j===5?n(v*U):(j>=2&&j<=4)?n(v*LU):v}
+function back(j,x){return j===5?x/U:(j>=2&&j<=4)?x/LU:x}
+function heads(sd){var t=['Rise or bump length ('+LN+')','Top length ('+LN+')','Fall length ('+LN+')','Height ('+UN+')'];sd.sec.querySelectorAll('th[data-h]').forEach(function(th){th.textContent=t[+th.dataset.h-2]})}
+function nice(r){for(var e=-6;e<=6;e++)for(var m=0;m<4;m++){var s=[1,2,2.5,5][m]*Math.pow(10,e);if(r/s<=6)return s}return 1}
+function fmt(v){return String(+v.toFixed(5))}
+function build(sd){
+ heads(sd);sd.tb.innerHTML='';
+ sd.rows.forEach(function(r,i){
+  var tr=document.createElement('tr'),td,b,sl;
+  td=document.createElement('td');b=document.createElement('button');b.textContent='\u2715';b.title='Remove this obstacle';b.setAttribute('aria-label','Remove obstacle '+(i+1));
+  b.onclick=function(){sd.rows.splice(i,1);build(sd);update()};td.appendChild(b);tr.appendChild(td);
+  td=document.createElement('td');sl=document.createElement('select');
+  [['S','Smooth ramp'],['N','Sine bump']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];sl.appendChild(op)});
+  sl.value=r[6];sl.setAttribute('aria-label','Type row '+(i+1));sl.onchange=function(){r[6]=sl.value;build(sd);update()};td.appendChild(sl);tr.appendChild(td);
+  [0,2,3,4,5].forEach(function(j){var td=document.createElement('td'),inp=document.createElement('input');
+   inp.type='number';inp.dataset.j=j;inp.step=j===0?0.05:j===5?n(5*U):n(0.05*LU);inp.value=disp(j,r[j]);inp.setAttribute('aria-label',LAB[j]+' row '+(i+1));
+   if(r[6]==='N'&&(j===3||j===4))inp.disabled=true;
+   inp.oninput=function(){var x=parseFloat(inp.value);if(isFinite(x)){x=back(j,x);r[j]=MINS[j]===null?x:Math.max(MINS[j],x);update()}};
+   td.appendChild(inp);tr.appendChild(td)});
+  td=document.createElement('td');td.className='dur';tr.appendChild(td);sd.tb.appendChild(tr)})}
+function update(){
+ var out=[],i;
+ sides.forEach(function(sd){
+  var key=JSON.stringify(sd.rows);
+  if(key!==sd.key){sd.key=key;sd.custom=null;sd.err='';sd.note='';sd.ta.value=expr(sd.rows)}
+  var over=false,d=sd.tb.querySelectorAll('.dur');
+  sd.rows.forEach(function(r,k){var q=tm(r);if(d[k])d[k].textContent=q.dur.toFixed(3);if(q.end>T+1e-9)over=true});
+  sd.warn.textContent=sd.err?sd.err:sd.note?sd.note:sd.custom?'Plotting the pasted function. It has terms the table cannot hold (only ramps and sine bumps made by this tool fit), so the table is not used until you press "Use table values".':(over?'An obstacle ends after 5 s. It will be cut off in the sampled data.':'')});
+ for(i=0;i<=500;i++){var t=i/100;out.push(t.toFixed(2)+', '+(samp(sides[0],t)*U).toFixed(5)+', '+(samp(sides[1],t)*U).toFixed(5))}
+ document.getElementById('csv').value=out.join('\n');
+ draw()}
+var M={l:56,r:14,t:22,b:36};
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+function size(){var d=window.devicePixelRatio||1;sides.forEach(function(p){var r=p.cv.getBoundingClientRect();p.W=r.width;p.H=r.height;p.cv.width=r.width*d;p.cv.height=r.height*d;p.ctx.setTransform(d,0,0,d,0,0)});draw()}
+function draw(){
+ if(!sides[0].W)return;
+ var lo=0,hi=0,i;
+ sides.forEach(function(p){p.pts=[];for(i=0;i<=500;i++){var y=samp(p,i/100)*U;p.pts.push(y);lo=Math.min(lo,y);hi=Math.max(hi,y)}});
+ if(frz){lo=frz.lo;hi=frz.hi}
+ var step=nice(Math.max(hi-lo,40*U));
+ lo=Math.floor((lo-step*1e-6)/step)*step;hi=Math.max(Math.ceil((hi+step*1e-6)/step)*step,lo+step);LR={lo:lo,hi:hi,step:step};
+ sides.forEach(function(p){
+  var ctx=p.ctx,W=p.W,H=p.H;ctx.clearRect(0,0,W,H);ctx.font='12px "IBM Plex Sans",sans-serif';
+  var X=function(t){return M.l+t/T*(W-M.l-M.r)},Y=function(v){return H-M.b-(v-lo)/(hi-lo)*(H-M.t-M.b)};p.X=X;p.Y=Y;p.lo=lo;p.hi=hi;
+  ctx.lineWidth=1;
+  for(i=0;i<=10;i++){var t=i*0.5;ctx.strokeStyle=i%2?css('--grid'):css('--grid2');ctx.beginPath();ctx.moveTo(X(t),Y(lo));ctx.lineTo(X(t),Y(hi));ctx.stroke();
+   if(i%2===0){ctx.fillStyle=css('--muted');ctx.textAlign='center';ctx.fillText(t,X(t),H-M.b+16)}}
+  for(var kk=0,v=lo;v<=hi+step*1e-6;kk++,v=lo+kk*step){ctx.strokeStyle=Math.abs(v)<step*1e-6?css('--grid2'):css('--grid');ctx.beginPath();ctx.moveTo(X(0),Y(v));ctx.lineTo(X(T),Y(v));ctx.stroke();
+   ctx.fillStyle=css('--muted');ctx.textAlign='right';ctx.fillText(fmt(v),M.l-8,Y(v)+4)}
+  ctx.fillStyle=css('--ink');ctx.textAlign='left';ctx.font='600 13px "IBM Plex Sans",sans-serif';ctx.fillText(p.name+' ('+UN+')',M.l,13);
+  ctx.font='12px "IBM Plex Sans",sans-serif';ctx.fillStyle=css('--muted');ctx.textAlign='center';ctx.fillText('TIME (s)',(M.l+W-M.r)/2,H-4);
+  ctx.beginPath();ctx.moveTo(X(0),Y(0));p.pts.forEach(function(y,k){ctx.lineTo(X(k/100),Y(y))});ctx.lineTo(X(T),Y(0));ctx.closePath();ctx.fillStyle=css('--fill');ctx.fill();
+  ctx.beginPath();p.pts.forEach(function(y,k){k?ctx.lineTo(X(k/100),Y(y)):ctx.moveTo(X(0),Y(y))});ctx.strokeStyle=css('--line');ctx.lineWidth=2.2;ctx.lineJoin='round';ctx.stroke();
+  if(!p.custom)hs(p).forEach(function(h){if(h.x>T)return;var a=p.drag&&p.drag.i===h.i&&p.drag.k===h.k;ctx.beginPath();ctx.arc(X(h.x),Y(h.y*U),a?8:6,0,7);ctx.fillStyle=css('--ink');ctx.fill();ctx.lineWidth=2.5;ctx.strokeStyle=css('--line');ctx.stroke()})})}
+document.getElementById('unit').onchange=function(){var o=this.options[this.selectedIndex],inch=o.text==='inch';U=+this.value;UN=o.text;LU=inch?39.3700787:1;LN=inch?'in':'m';sides.forEach(function(sd){if(!sd.custom)sd.key=null;build(sd)});update()};
+var spd=document.getElementById('spd');
+spd.oninput=function(){var x=parseFloat(spd.value);if(!isFinite(x)||x<1)return;SP=x;sides.forEach(function(sd){sd.rows.forEach(function(r){r[1]=SP});if(sd.custom)sd.key=JSON.stringify(sd.rows)});update()};
+document.getElementById('csv').onclick=function(){this.select()};
+window.addEventListener('resize',size);
+if(window.matchMedia)window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
+sides[0].rows=presets.single.r.map(function(r){var c=r.slice();c[1]=SP;return c});
+sides[1].rows=presets.sine.r.map(function(r){var c=r.slice();c[1]=SP;return c});
+sides.forEach(build);size();update();
+})();
+</script>
+</body>
+</html>
